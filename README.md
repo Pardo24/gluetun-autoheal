@@ -84,6 +84,12 @@ Two processes run in parallel:
 
 [willfarrell/autoheal](https://github.com/willfarrell/autoheal) uses `docker restart` internally. This works for most containers, but **fails for containers sharing a network namespace via `network_mode: "service:gluetun"`** when gluetun itself was recreated — the network namespace reference is broken and cannot be restored with a restart.
 
+## Security notes
+
+Docker Hub's vulnerability scanner may report CVEs in this image. These originate from the Docker CLI binary (Go dependencies such as `google.golang.org/grpc`) included in the `docker:cli` base image — they are not introduced by this project's code. The Docker CLI binary is required to run `docker compose` commands and cannot be replaced. Fixes depend on Docker Inc. updating their Go dependencies.
+
+The image uses a multi-stage build to keep the Alpine base minimal and up to date.
+
 ## Platforms
 
 Built for `linux/amd64`, `linux/arm64` and `linux/arm/v7` (Raspberry Pi).
