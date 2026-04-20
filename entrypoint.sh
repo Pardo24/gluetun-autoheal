@@ -53,7 +53,7 @@ gluetun_watch() {
   docker events \
     --filter "container=${GLUETUN_CONTAINER}" \
     --filter event=health_status \
-    --format '{{.Status}}' | \
+    --format '{{.Action}}' | \
   while read -r status; do
     if [ "$status" = "health_status: healthy" ]; then
       log "gluetun healthy — recreating: $GLUETUN_DEPS"
