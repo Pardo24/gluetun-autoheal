@@ -25,7 +25,7 @@ It also acts as a general **autoheal** for any container with the `autoheal=true
 ```yaml
 services:
   gluetun-autoheal:
-    image: danipardo/gluetun-autoheal:latest
+    image: danipal/gluetun-autoheal:latest
     container_name: gluetun_autoheal
     restart: unless-stopped
     volumes:
@@ -38,6 +38,7 @@ services:
       ENV_FILE: /workspace/.env
       AUTOHEAL_INTERVAL: "30"                 # seconds between autoheal checks
       AUTOHEAL_LABEL: autoheal=true           # label to watch for autoheal
+      COMPOSE_PROJECT_NAME: myproject         # required if your project folder isn't the compose project name
 ```
 
 Mark containers you want autoheal to monitor:
@@ -69,6 +70,7 @@ Mark containers you want autoheal to monitor:
 | `ENV_FILE` | `/workspace/.env` | Path to your .env file inside the container |
 | `AUTOHEAL_INTERVAL` | `30` | Seconds between unhealthy container checks |
 | `AUTOHEAL_LABEL` | `autoheal=true` | Docker label used to opt containers into autoheal |
+| `COMPOSE_PROJECT_NAME` | _(empty)_ | Set this if your compose project name differs from the mounted folder name. When the compose file is mounted at `/workspace`, Docker Compose defaults to project name `workspace` — set this to your actual project name (e.g. `myproject`) to avoid conflicts |
 
 ## How it works
 

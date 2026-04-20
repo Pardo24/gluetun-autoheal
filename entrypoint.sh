@@ -5,6 +5,7 @@ GLUETUN_CONTAINER="${GLUETUN_CONTAINER:-gluetun}"
 GLUETUN_DEPS="${GLUETUN_DEPS:-qbittorrent}"
 COMPOSE_FILE="${COMPOSE_FILE:-/workspace/docker-compose.yml}"
 ENV_FILE="${ENV_FILE:-/workspace/.env}"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-}"
 AUTOHEAL_INTERVAL="${AUTOHEAL_INTERVAL:-30}"
 AUTOHEAL_LABEL="${AUTOHEAL_LABEL:-autoheal=true}"
 
@@ -19,8 +20,10 @@ is_gluetun_dep() {
 }
 
 compose_up_deps() {
+  PROJECT_ARG=""
+  [ -n "$COMPOSE_PROJECT_NAME" ] && PROJECT_ARG="-p $COMPOSE_PROJECT_NAME"
   # shellcheck disable=SC2086
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d $GLUETUN_DEPS
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" $PROJECT_ARG up -d $GLUETUN_DEPS
 }
 
 # ── Autoheal loop ────────────────────────────────────────────────
