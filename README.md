@@ -1,24 +1,27 @@
 # gluetun-autoheal
 
-Automatically recovers containers that share gluetun's network namespace when gluetun is recreated or restarted.
+All-in-one watchdog that keeps containers using `network_mode: "service:gluetun"` alive across gluetun recreations, VPN drops, host suspend/resume, and broken network namespaces.
 
 ## The problem
 
-When you run containers like qBittorrent, Prowlarr or FlareSolverr with `network_mode: "service:gluetun"`, they share gluetun's network namespace. If gluetun is **recreated** (e.g. after `docker compose up -d gluetun` to update it), those containers lose their network — they appear running but have no connectivity.
+When you run containers like qBittorrent, Prowlarr or FlareSolverr with `network_mode: "service:gluetun"`, they share gluetun's network namespace. Several common scenarios break them silently:
 
-`docker restart` cannot fix this. You must run `docker compose up -d` to recreate them.
+- **Gluetun is recreated** (e.g. after `docker compose up -d gluetun`) — dependents lose their namespace reference and `docker restart` cannot fix it
+- **VPN provider drops the tunnel** — gluetun stays "running" but has no internet
+- **Host PC suspended/resumed** — Docker may leave dependents in a half-broken state
+- **Mullvad/Wireguard hiccup** — gluetun reconnects but dependents remain stuck on the old tunnel
 
-Common symptoms:
-- qBittorrent returns 502 after gluetun update
-- Prowlarr/FlareSolverr lose internet connectivity after gluetun recreate
-- `docker restart nubul_qbittorrent` fails silently or with a network error
-- Containers show as healthy in `docker ps` but have no actual network access
+Symptoms: qBittorrent returns 502, Prowlarr indexers fail with timeouts, containers show healthy in `docker ps` but have no actual network access.
 
 ## The solution
 
-`gluetun-autoheal` watches Docker health events for gluetun. When gluetun becomes healthy, it runs `docker compose up -d` for all configured dependents — recreating them with a fresh network namespace attachment.
+This image runs three coordinated mechanisms in a single container:
 
-It also acts as a general **autoheal** for any container with the `autoheal=true` label, using `docker compose up -d` for gluetun-dependent containers and `docker restart` for everything else.
+1. **Active connectivity check** (every `CHECK_INTERVAL` seconds) — actively tests if gluetun and each dependent container can reach the internet via TCP. If a dependent has no connectivity, it is recreated with `docker compose up -d`. If gluetun itself can't reach the internet for `FAILURE_THRESHOLD` consecutive checks, gluetun is restarted.
+
+2. **Gluetun health event listener** — reacts immediately when Docker fires a `health_status: healthy` event for gluetun (typically right after a recreation). Recreates all configured dependents.
+
+3. **Autoheal for non-VPN containers** — for any container with the `autoheal=true` label that is not in the gluetun dep list, restarts it via `docker restart` when it becomes unhealthy. (VPN deps are skipped here — they're already covered by the active check.)
 
 ## Usage
 
@@ -33,12 +36,14 @@ services:
       - /path/to/your/project:/workspace:ro   # must contain docker-compose.yml and .env
     environment:
       GLUETUN_CONTAINER: gluetun              # container name of your gluetun instance
-      GLUETUN_DEPS: "qbittorrent prowlarr flaresolverr"  # compose service names to recreate
+      GLUETUN_DEPS: "qbittorrent prowlarr flaresolverr"             # compose service names to recreate
+      GLUETUN_DEP_CONTAINERS: "qbittorrent prowlarr flaresolverr"   # container names to actively check
       COMPOSE_FILE: /workspace/docker-compose.yml
       ENV_FILE: /workspace/.env
-      AUTOHEAL_INTERVAL: "30"                 # seconds between autoheal checks
-      AUTOHEAL_LABEL: autoheal=true           # label to watch for autoheal
       COMPOSE_PROJECT_NAME: myproject         # required if your project folder isn't the compose project name
+      CHECK_INTERVAL: "60"                    # seconds between active connectivity checks
+      AUTOHEAL_INTERVAL: "30"                 # seconds between autoheal label checks (non-VPN containers)
+      AUTOHEAL_LABEL: autoheal=true           # label opting non-VPN containers into autoheal
 ```
 
 Mark containers you want autoheal to monitor:
@@ -68,17 +73,25 @@ Mark containers you want autoheal to monitor:
 | `GLUETUN_DEPS` | `qbittorrent` | Space-separated compose service names that depend on gluetun's network |
 | `COMPOSE_FILE` | `/workspace/docker-compose.yml` | Path to your docker-compose.yml inside the container |
 | `ENV_FILE` | `/workspace/.env` | Path to your .env file inside the container |
-| `AUTOHEAL_INTERVAL` | `30` | Seconds between unhealthy container checks |
-| `AUTOHEAL_LABEL` | `autoheal=true` | Docker label used to opt containers into autoheal |
+| `GLUETUN_DEP_CONTAINERS` | _(falls back to `GLUETUN_DEPS`)_ | Space-separated container names of dependents (used to test connectivity from inside each one). Set this if container names differ from compose service names (e.g. `myproject_qbittorrent`) |
+| `CHECK_INTERVAL` | `60` | Seconds between active connectivity checks |
+| `VPN_TEST_HOST` | `1.1.1.1` | Host used for the TCP connectivity test |
+| `VPN_TEST_PORT` | `443` | Port used for the TCP connectivity test |
+| `VPN_TEST_TIMEOUT` | `10` | Timeout in seconds for each connectivity test |
+| `FAILURE_THRESHOLD` | `2` | Consecutive VPN failures before restarting gluetun itself |
+| `AUTOHEAL_INTERVAL` | `30` | Seconds between unhealthy container checks (non-VPN) |
+| `AUTOHEAL_LABEL` | `autoheal=true` | Docker label used to opt non-VPN containers into autoheal |
 | `COMPOSE_PROJECT_NAME` | _(empty)_ | Set this if your compose project name differs from the mounted folder name. When the compose file is mounted at `/workspace`, Docker Compose defaults to project name `workspace` — set this to your actual project name (e.g. `myproject`) to avoid conflicts |
 
 ## How it works
 
-Two processes run in parallel:
+Three processes run in parallel:
 
-1. **Watchdog** — subscribes to Docker events and waits for `health_status: healthy` on the gluetun container. When triggered, runs `docker compose up -d <GLUETUN_DEPS>`.
+1. **Active connectivity check** — every `CHECK_INTERVAL` seconds, runs `nc -z VPN_TEST_HOST:VPN_TEST_PORT` from inside the gluetun container and inside each dep container. If gluetun fails repeatedly, gluetun is restarted. If a dep fails (broken namespace), all deps are recreated with `docker compose up -d`.
 
-2. **Autoheal** — polls every `AUTOHEAL_INTERVAL` seconds for containers labeled `autoheal=true` that are in `unhealthy` state. For gluetun-dependent containers it runs `docker compose up -d`; for others it runs `docker restart`.
+2. **Event listener** — subscribes to Docker events and waits for `health_status: healthy` on the gluetun container. When triggered, runs `docker compose up -d <GLUETUN_DEPS>` to immediately reattach dependents.
+
+3. **Autoheal loop** — polls every `AUTOHEAL_INTERVAL` seconds for containers labeled `autoheal=true` that are unhealthy. Restarts them with `docker restart`. VPN-dependent containers are skipped here (already covered by the active check).
 
 ## Why not use willfarrell/autoheal?
 
