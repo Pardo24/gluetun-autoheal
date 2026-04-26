@@ -46,7 +46,9 @@ services:
       AUTOHEAL_LABEL: autoheal=true           # label opting non-VPN containers into autoheal
 ```
 
-Mark containers you want autoheal to monitor:
+### VPN-dependent containers (qBittorrent, Prowlarr, FlareSolverr, etc.)
+
+Just declare them with `network_mode: "service:gluetun"` as usual. **No `autoheal=true` label needed** — they're recovered automatically by the active connectivity check and the event listener, both of which use `docker compose up -d` (the only command that works after a namespace break).
 
 ```yaml
   qbittorrent:
@@ -55,14 +57,23 @@ Mark containers you want autoheal to monitor:
     depends_on:
       gluetun:
         condition: service_healthy
+    # no autoheal label here — VPN deps are handled by active check
+```
+
+### Non-VPN containers you want auto-restarted on unhealthy
+
+Add the `autoheal=true` label and a healthcheck. Standard `willfarrell/autoheal` semantics apply:
+
+```yaml
+  immich-server:
+    image: ghcr.io/immich-app/immich-server
     labels:
       autoheal: "true"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "https://1.1.1.1"]
+      test: ["CMD", "curl", "-sf", "http://localhost:2283"]
       interval: 30s
-      timeout: 15s
+      timeout: 10s
       retries: 3
-      start_period: 30s
 ```
 
 ## Environment variables
@@ -93,6 +104,20 @@ Three processes run in parallel:
 
 3. **Autoheal loop** — polls every `AUTOHEAL_INTERVAL` seconds for containers labeled `autoheal=true` that are unhealthy. Restarts them with `docker restart`. VPN-dependent containers are skipped here (already covered by the active check).
 
+## Troubleshooting / does this fix my problem?
+
+If you've hit any of the following, this image is what you want:
+
+- `qBittorrent WebUI returns 502 Bad Gateway after gluetun update`
+- `Prowlarr / Sonarr "All indexers are unavailable due to failures"` after a gluetun restart
+- `FlareSolverr / Byparr returns timeout` despite the container being "running"
+- `nubul_qbittorrent | Up X days (unhealthy)` while the container looks fine in `docker ps`
+- `docker restart nubul_qbittorrent` succeeds but the container still has no internet
+- `wget: download timed out` when running `docker exec qbittorrent wget https://1.1.1.1`
+- After Docker Desktop / host PC suspend-resume, VPN-dependent containers stop downloading
+- Mullvad / NordVPN / Surfshark Wireguard tunnel reconnects but containers stay broken
+- Containers using `network_mode: "service:gluetun"` show no traffic and torrent trackers all show "operation not permitted"
+
 ## Why not use willfarrell/autoheal?
 
 [willfarrell/autoheal](https://github.com/willfarrell/autoheal) uses `docker restart` internally. This works for most containers, but **fails for containers sharing a network namespace via `network_mode: "service:gluetun"`** when gluetun itself was recreated — the network namespace reference is broken and cannot be restored with a restart.
@@ -106,3 +131,7 @@ The image uses a multi-stage build to keep the Alpine base minimal and up to dat
 ## Platforms
 
 Built for `linux/amd64`, `linux/arm64` and `linux/arm/v7` (Raspberry Pi).
+
+## Keywords
+
+gluetun, qbittorrent behind vpn, network_mode service:gluetun, gluetun watchdog, gluetun autoheal, qbittorrent gluetun recreate, qbittorrent 502 vpn, prowlarr indexer unavailable vpn, flaresolverr no internet, byparr no internet, mullvad qbittorrent, wireguard docker container loses network, docker namespace broken after restart, vpn killswitch container, willfarrell autoheal alternative gluetun, docker compose up vs restart network namespace
