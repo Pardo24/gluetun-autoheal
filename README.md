@@ -182,6 +182,10 @@ The image uses a multi-stage build to keep the Alpine base minimal and up to dat
 
 Built for `linux/amd64` and `linux/arm64` (covers x86 servers and modern Raspberry Pi 3/4/5 running 64-bit OS).
 
+## License
+
+MIT, see [LICENSE](LICENSE).
+
 ## Keywords
 
 gluetun, qbittorrent behind vpn, network_mode service:gluetun, gluetun watchdog, gluetun autoheal, qbittorrent gluetun recreate, qbittorrent 502 vpn, prowlarr indexer unavailable vpn, flaresolverr no internet, byparr no internet, mullvad qbittorrent, wireguard docker container loses network, docker namespace broken after restart, vpn killswitch container, willfarrell autoheal alternative gluetun, docker compose up vs restart network namespace
