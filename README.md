@@ -180,7 +180,7 @@ The image uses a multi-stage build to keep the Alpine base minimal and up to dat
 
 ## Platforms
 
-Built for `linux/amd64`, `linux/arm64` and `linux/arm/v7` (Raspberry Pi).
+Built for `linux/amd64` and `linux/arm64` (covers x86 servers and modern Raspberry Pi 3/4/5 running 64-bit OS).
 
 ## Keywords
 
