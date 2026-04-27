@@ -36,7 +36,23 @@ container_running() {
 }
 
 container_has_internet() {
-  docker exec "$1" nc -z -w "$VPN_TEST_TIMEOUT" "$VPN_TEST_HOST" "$VPN_TEST_PORT" >/dev/null 2>&1
+  # Try nc, then curl, then wget — whichever the container image provides.
+  # Returns 0 if any succeeds, 1 only if a tool exists AND fails.
+  # If no tool is available, returns 0 (can't determine, assume OK).
+  c="$1"
+  if docker exec "$c" sh -c 'command -v nc' >/dev/null 2>&1; then
+    docker exec "$c" nc -z -w "$VPN_TEST_TIMEOUT" "$VPN_TEST_HOST" "$VPN_TEST_PORT" >/dev/null 2>&1
+    return $?
+  fi
+  if docker exec "$c" sh -c 'command -v curl' >/dev/null 2>&1; then
+    docker exec "$c" curl -sf --max-time "$VPN_TEST_TIMEOUT" "https://${VPN_TEST_HOST}" >/dev/null 2>&1
+    return $?
+  fi
+  if docker exec "$c" sh -c 'command -v wget' >/dev/null 2>&1; then
+    docker exec "$c" wget -qO- --timeout="$VPN_TEST_TIMEOUT" "https://${VPN_TEST_HOST}" >/dev/null 2>&1
+    return $?
+  fi
+  return 0
 }
 
 # ── 1. Active connectivity check (handles VPN drops, broken namespaces, suspend/resume) ──
