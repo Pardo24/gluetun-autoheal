@@ -4,7 +4,7 @@ FROM docker:cli AS docker-source
 # Stage 2: minimal Alpine with only what we need
 FROM alpine:latest
 
-RUN apk upgrade --no-cache
+RUN apk add --no-cache curl ca-certificates && apk upgrade --no-cache
 
 # Copy only the two binaries we use
 COPY --from=docker-source /usr/local/bin/docker /usr/local/bin/docker
