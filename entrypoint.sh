@@ -39,8 +39,11 @@ is_gluetun_dep() {
 compose_up_deps() {
   PROJECT_ARG=""
   [ -n "$COMPOSE_PROJECT_NAME" ] && PROJECT_ARG="-p $COMPOSE_PROJECT_NAME"
+  # --force-recreate is required because docker compose otherwise sees the
+  # containers as "running" and skips them, even when their network namespace
+  # is broken (which is exactly the case we're trying to fix)
   # shellcheck disable=SC2086
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" $PROJECT_ARG up -d $GLUETUN_DEPS
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" $PROJECT_ARG up -d --force-recreate $GLUETUN_DEPS
 }
 
 container_running() {
