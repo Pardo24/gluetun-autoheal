@@ -5,6 +5,11 @@ on:
     branches: [master]
     tags: ["v*"]
 
+# Force javascript actions onto Node.js 24 ahead of the 2026-06-16 default
+# switch, so we're not surprised when Node 20 stops being supported.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     runs-on: ubuntu-latest
