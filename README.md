@@ -25,6 +25,8 @@ This image runs three coordinated mechanisms in a single container:
 
 Optional: **email alerts** when the VPN can't be recovered automatically (subscription expired, server outage, bad credentials), with optional referral link to monetize alerts.
 
+Optional: **qBittorrent tracker health check** for a degradation mode the connectivity check can't see — VPN is up, DNS works, DHT works, but every UDP tracker is dead globally. Sampling tracker status via the qBit WebUI catches this and triggers a `docker restart $GLUETUN_CONTAINER` so the event listener can cascade a clean recreate.
+
 ## Usage
 
 ```yaml
@@ -105,6 +107,12 @@ Add the `autoheal=true` label and a healthcheck. Standard `willfarrell/autoheal`
 | `ALERT_FOLLOWUP_INTERVAL` | `10800` | Seconds between follow-up alerts during a sustained outage (default: 3 hours) |
 | `ALERT_REFERRAL_NAME` | _(empty)_ | Optional VPN provider name to recommend in alert emails (e.g. `ProtonVPN`) |
 | `ALERT_REFERRAL_URL` | _(empty)_ | Optional referral URL appended to alert emails. Lets you monetize alerts when users' current VPN fails, since they're already in the mindset to switch providers |
+| `QBIT_CONTAINER` | _(empty)_ | Container name of your qBittorrent instance. Set to enable the tracker health check loop. Leave empty to disable. |
+| `QBIT_API_PORT` | `8080` | qBittorrent WebUI port _inside_ the container (the one curl will hit via `docker exec`) |
+| `QBIT_HEALTH_INTERVAL` | `300` | Seconds between tracker health checks |
+| `QBIT_HEALTH_GRACE` | `600` | Initial warm-up before the first check, and cool-down after the watchdog itself restarts gluetun (gives qBit time to re-announce) |
+| `QBIT_HEALTH_SAMPLE` | `15` | How many torrents to sample per check |
+| `QBIT_HEALTH_FAIL_STREAK` | `2` | Consecutive failing checks before triggering `docker restart $GLUETUN_CONTAINER` |
 
 ## How it works
 
@@ -115,6 +123,8 @@ Three processes run in parallel:
 2. **Event listener**: subscribes to Docker events and waits for `health_status: healthy` on the gluetun container. When triggered, runs `docker compose up -d <GLUETUN_DEPS>` to immediately reattach dependents.
 
 3. **Autoheal loop**: polls every `AUTOHEAL_INTERVAL` seconds for containers labeled `autoheal=true` that are unhealthy. Restarts them with `docker restart`. VPN-dependent containers are skipped here (already covered by the active check).
+
+4. **qBit tracker health loop (optional)**: when `QBIT_CONTAINER` is set, samples qBittorrent's trackers every `QBIT_HEALTH_INTERVAL` seconds. If no torrent in the sample has a working tracker for `QBIT_HEALTH_FAIL_STREAK` consecutive checks, restarts gluetun (the event listener then cascades the deps). Catches a degradation mode the active check can't see — tunnel up, DNS up, DHT up, but every UDP tracker dead.
 
 ## Email alerts
 
@@ -143,6 +153,27 @@ You'll receive three types of email:
 3. **Recovery**: once when the VPN comes back online, with total outage duration and restart count.
 
 Leave `ALERT_EMAIL_TO` empty to disable alerts entirely.
+
+## qBittorrent tracker health check
+
+After a VPN reconnect (gluetun health flap, server change), qBittorrent occasionally ends up in a state where the tunnel works for HTTPS/DNS/DHT but every UDP tracker returns "Operation not permitted" or just times out forever. The `active_check_loop` can't see this: from its point of view both gluetun and qBit have internet. New torrents stay stuck with 0 seeds/0 peers across the whole library, even on popular content.
+
+This loop opts in to recovering from that state by sampling tracker status via the qBit WebUI:
+
+```yaml
+    environment:
+      QBIT_CONTAINER: qbittorrent      # container name of your qBit instance
+      QBIT_HEALTH_INTERVAL: "300"      # check every 5 minutes
+      QBIT_HEALTH_GRACE: "600"         # 10-min warm-up before the first check
+      QBIT_HEALTH_SAMPLE: "15"         # sample 15 torrents per check
+      QBIT_HEALTH_FAIL_STREAK: "2"     # 2 bad checks in a row → restart gluetun
+```
+
+**Requirement**: qBittorrent must accept WebUI calls from localhost without a password. In the qBit UI: _Preferences → Web UI → Bypass authentication for clients on localhost_ = ON. Or via the API: `POST /api/v2/app/setPreferences` with `bypass_local_auth=true`. The watchdog reaches the qBit API via `docker exec $QBIT_CONTAINER curl http://localhost:8080/...` so there is no password handling.
+
+**How the detection works**: each check pulls up to `QBIT_HEALTH_SAMPLE` torrents (preferring those currently downloading) and counts how many have at least one non-virtual tracker (HTTP / UDP, excluding the DHT/PeX/LSD pseudo-entries) reporting `status=2` (working). If that count is zero for `QBIT_HEALTH_FAIL_STREAK` consecutive checks (default: 10 minutes of total failure), the watchdog runs `docker restart $GLUETUN_CONTAINER`. The existing event listener then fires on the next healthy event and recreates the deps as usual — typically Mullvad-style providers will hand out a fresh WireGuard endpoint and trackers come back.
+
+Leave `QBIT_CONTAINER` empty (the default) to disable this loop.
 
 ### Optional: VPN referral monetization
 

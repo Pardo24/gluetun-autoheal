@@ -27,6 +27,31 @@ ALERT_FOLLOWUP_INTERVAL="${ALERT_FOLLOWUP_INTERVAL:-10800}"
 ALERT_REFERRAL_NAME="${ALERT_REFERRAL_NAME:-}"
 ALERT_REFERRAL_URL="${ALERT_REFERRAL_URL:-}"
 
+# ── qBittorrent tracker health (post-VPN-reconnect recovery) ──
+# After a gluetun reconnect, qBittorrent sometimes ends up with every UDP
+# tracker dead globally even though the VPN tunnel itself is healthy. The
+# active_check_loop can't see this because basic connectivity (DNS, HTTPS,
+# DHT) still works. This optional loop samples N torrents' trackers; if zero
+# of them have any tracker in status=2 (working) for FAIL_STREAK consecutive
+# checks, it triggers `docker restart $GLUETUN_CONTAINER` and the event
+# listener cascades a clean recreate of the deps. Mullvad in particular
+# tends to assign a different WireGuard endpoint after the restart, which
+# fixes the broken tracker UDP path.
+#
+# REQUIREMENT: qBittorrent must allow the WebUI without auth from localhost
+# inside the container (Preferences → WebUI → "Bypass authentication for
+# clients on localhost" = ON, or the API field `bypass_local_auth=true`).
+# The watchdog reaches the API via `docker exec $QBIT_CONTAINER curl
+# http://localhost:8080/...` so no password handling is needed.
+#
+# Disabled by default — set QBIT_CONTAINER to enable.
+QBIT_CONTAINER="${QBIT_CONTAINER:-}"
+QBIT_HEALTH_INTERVAL="${QBIT_HEALTH_INTERVAL:-300}"
+QBIT_HEALTH_GRACE="${QBIT_HEALTH_GRACE:-600}"
+QBIT_HEALTH_SAMPLE="${QBIT_HEALTH_SAMPLE:-15}"
+QBIT_HEALTH_FAIL_STREAK="${QBIT_HEALTH_FAIL_STREAK:-2}"
+QBIT_API_PORT="${QBIT_API_PORT:-8080}"
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"; }
 
 is_gluetun_dep() {
@@ -275,6 +300,85 @@ autoheal_loop() {
   done
 }
 
+# ── 4. qBittorrent tracker health check (opt-in, see config block above) ──
+# Sample $QBIT_HEALTH_SAMPLE torrents; if 0/N have any tracker reporting
+# status=2 (working) for $QBIT_HEALTH_FAIL_STREAK consecutive checks, restart
+# gluetun. The existing event listener will then cascade the deps.
+qbit_curl() {
+  # $1 = API path. Returns body on stdout, non-zero rc if API unreachable.
+  docker exec "$QBIT_CONTAINER" curl -sf --max-time 10 "http://localhost:${QBIT_API_PORT}$1" 2>/dev/null
+}
+
+qbit_sample_hashes() {
+  # Prefer torrents currently downloading; fall back to any torrent.
+  hashes=$(qbit_curl "/api/v2/torrents/info?filter=downloading&limit=$QBIT_HEALTH_SAMPLE")
+  if [ -z "$hashes" ] || [ "$hashes" = "[]" ]; then
+    hashes=$(qbit_curl "/api/v2/torrents/info?limit=$QBIT_HEALTH_SAMPLE")
+  fi
+  # 40-char hex infohashes; works without jq.
+  echo "$hashes" | grep -oE '"hash":"[a-f0-9]{40}"' | sed 's/"hash":"//;s/"//'
+}
+
+qbit_tracker_health_check() {
+  # rc 0 = healthy (≥1 torrent has a working tracker), 1 = unhealthy (none),
+  # 2 = indeterminate (no torrents to sample / API unreachable).
+  hashes=$(qbit_sample_hashes)
+  [ -z "$hashes" ] && return 2
+  ok=0
+  total=0
+  for h in $hashes; do
+    total=$((total + 1))
+    body=$(qbit_curl "/api/v2/torrents/trackers?hash=$h") || continue
+    # Match a non-virtual tracker URL (http(s)/udp scheme) with status=2 in
+    # the same JSON object. DHT/PeX/LSD entries have no scheme prefix.
+    if echo "$body" | grep -oE '"url":"[a-z]+://[^"]+"[^}]*"status":2|"status":2[^}]*"url":"[a-z]+://[^"]+"' | head -1 | grep -q . ; then
+      ok=$((ok + 1))
+    fi
+  done
+  [ "$total" -eq 0 ] && return 2
+  [ "$ok" -gt 0 ] && return 0
+  return 1
+}
+
+qbit_tracker_loop() {
+  if [ -z "$QBIT_CONTAINER" ]; then
+    log "qBit tracker check: disabled (QBIT_CONTAINER empty)"
+    return
+  fi
+  log "qBit tracker check: started (interval=${QBIT_HEALTH_INTERVAL}s, grace=${QBIT_HEALTH_GRACE}s, sample=${QBIT_HEALTH_SAMPLE}, fail_streak=${QBIT_HEALTH_FAIL_STREAK})"
+  sleep "$QBIT_HEALTH_GRACE"  # initial warm-up
+  streak=0
+  while true; do
+    sleep "$QBIT_HEALTH_INTERVAL"
+    container_running "$QBIT_CONTAINER" || continue
+    container_running "$GLUETUN_CONTAINER" || continue
+    qbit_tracker_health_check
+    rc=$?
+    case "$rc" in
+      0)
+        if [ "$streak" -gt 0 ]; then
+          log "[tracker] recovered after $streak unhealthy check(s)"
+        fi
+        streak=0
+        ;;
+      1)
+        streak=$((streak + 1))
+        log "[tracker] no working trackers across sample ($streak/$QBIT_HEALTH_FAIL_STREAK)"
+        if [ "$streak" -ge "$QBIT_HEALTH_FAIL_STREAK" ]; then
+          log "[tracker] global tracker failure — restarting $GLUETUN_CONTAINER (event listener will cascade)"
+          docker restart "$GLUETUN_CONTAINER"
+          streak=0
+          sleep "$QBIT_HEALTH_GRACE"  # give the cascade time to settle
+        fi
+        ;;
+      2)
+        log "[tracker] no torrents to sample / qBit API unreachable — skip"
+        ;;
+    esac
+  done
+}
+
 active_check_loop &
 gluetun_event_watch &
+qbit_tracker_loop &
 autoheal_loop
