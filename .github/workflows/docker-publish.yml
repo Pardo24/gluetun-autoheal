@@ -48,3 +48,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Sync the README.md to the Docker Hub repository description so the
+      # overview page is always in sync with the canonical docs in the repo.
+      # Only runs on pushes to master (skips tag builds to avoid duplicates).
+      - name: Sync README → Docker Hub description
+        if: github.ref == 'refs/heads/master'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: danipal/gluetun-autoheal
+          short-description: "Watchdog that keeps containers using network_mode service:gluetun alive across VPN drops, gluetun recreations and broken namespaces. Optional email alerts + qBit tracker health check."
+          readme-filepath: ./README.md
